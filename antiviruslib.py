@@ -12,16 +12,44 @@ import concurrent.futures
 import winreg
 
 
-# GETS A PATH TO A .db FILE AND RETURNS A CONNECTION AND CURSOR TO THE FILE.
-def connect_to_db(db_file):
-    connection = sqlite3.connect(db_file)
-    cursor = connection.cursor()
-    return (connection, cursor)
+class DB_File:
+    def __init__(self, db_path):
+        self.db_path = db_path
+        self.connection = sqlite3.connect(self.db_path)
+        self.cursor = self.connection.cursor()
+    
+    # GETS A CONNECTION TO A .db FILE AND CLOSES THE CONNECTION (RETURNS NOTHING)
+    def close_db_connection(self):
+        self.connection.close()
+        return
+    
+    # GETS FILE PATH, A CONNECTION AND CURSOR TO A .db FILE AND A TABLE NAME (OPPTIONAL)
+    # RETURNS sha256 AND md5 HASHES FOR THE FILE PATH FROM THE .db FILE
+    def get_hash_from_db(self, file_path, hash_algorithm_str, table_name="hashes"):
+        sql_str = "SELECT " + hash_algorithm_str + " FROM " + table_name + " WHERE file_path = ?"
+        self.cursor.execute(sql_str, (file_path,))
+        
+        result = self.cursor.fetchone()
+        
+        if result:
+            return result
+        return None
+    
+    # GETS sha256 AND md5 HASHES AND COMPARES THEM TO THE HASHES IN THE .db FILE
+    # RETURNS BOOLEAN: TRUE -> THE HASHES ARE EQUAL | FALSE -> THE HASHES ARE NOT EQUAL
+    def is_hashes_equal(self, file_path, current_hash, hash_algorithm_str):
+        original_hash = self.get_hash_from_db(file_path, hash_algorithm_str)
+        if current_hash != original_hash:
+            return False
+        return True
+    
+    # GETS A FILE PATH, 2 HASHES OF THE FILE (sha256, md5), A .db FILE PATH AND A TABLE NAME (optional)
+    # ADDS THE FILE PATH AND THE HASHES TO THE DATA BASE, RETURNS None
+    def add_hashes_to_db(self, file_path, sha256, md5, db_table="hashes"):
+        self.cursor.execute("INSERT OR IGNORE INTO ", db_table, " (file_path, sha256, md5) VALUES (?, ?, ?)"
+                          ,(file_path, sha256, md5))
+        return None
 
-# GETS A CONNECTION TO A .db FILE AND CLOSES THE CONNECTION (RETURNS NOTHING)
-def close_db_connection(connection):
-    connection.close()
-    return
 
 # GETS A BYTE STRING AND REMOVES WHITESPACE CHARACTERS EXCLUDING SPACE
 # RETURNS A BYTE STRING WITHOUT WHITESPACE CHARACTES (EXCLUDING SPACE)
@@ -78,10 +106,10 @@ def get_file_type(file_path):
     
 # GETS A FILE PATH AND CHECKS IF THE FILE CONTAINS MALICIOUS CODE 
 # RETURNS BOOLEAN: TRUE -> MALICIOUS | FALSE -> NOT MALICIOUS
-def is_file_contains_malicious_code(file_path, connection, cursor):
+def is_file_contains_malicious_code(file_path, db_file):
     SIMILARITY_PERCENTAGE = 20
-    cursor.execute("SELECT name FROM viruses;")
-    viruses_names = cursor.fetchall()
+    db_file.cursor.execute("SELECT name FROM viruses;")
+    viruses_names = db_file.cursor.fetchall()
     file = open(file_path, 'rb')
     file_lines = file.readlines()
     for i in range(len(file_lines)):
@@ -89,8 +117,8 @@ def is_file_contains_malicious_code(file_path, connection, cursor):
     file.close()
     for name in viruses_names:
         virus_name = name[0]
-        cursor.execute("SELECT code FROM viruses WHERE name = ?", (virus_name,))
-        virus_code = cursor.fetchall()[0][0]
+        db_file.cursor.execute("SELECT code FROM viruses WHERE name = ?", (virus_name,))
+        virus_code = db_file.cursor.fetchall()[0][0]
         virus_code_lines = virus_code.splitlines()
         
         lines_counter = 0
@@ -100,7 +128,6 @@ def is_file_contains_malicious_code(file_path, connection, cursor):
         for i in range(len(virus_code_lines)):
             virus_code_lines[i] = virus_code_lines[i].encode("UTF-8")
             
-            #print("INDEX = ", i, " OUT OF: ", len(virus_code_lines))
             virus_code_lines[i] = remove_whitespace_except_space(virus_code_lines[i])
             print(virus_code_lines[i])
             print(file_lines[0])
@@ -111,25 +138,13 @@ def is_file_contains_malicious_code(file_path, connection, cursor):
         print("PERCENTAGE: ", virus_percentage_in_file)    
 
         if virus_percentage_in_file >= SIMILARITY_PERCENTAGE:
-            connection.commit()
-            close_db_connection(connection)
-            #print("SUS FILE DETECTED!!!!")
+            db_file.connection.commit()
+            db_file.close_db_connection()
             return True
     
-    #print("FILE IS GOOD :)")
     return False
 
-# GETS FILE PATH, A CONNECTION AND CURSOR TO A .db FILE AND A TABLE NAME (OPPTIONAL)
-# RETURNS sha256 AND md5 HASHES FOR THE FILE PATH FROM THE .db FILE
-def get_hash_from_db(file_path, hash_algorithm_str, db_connection, db_cursor, table_name="hashes"):
-    sql_str = "SELECT " + hash_algorithm_str + " FROM " + table_name + " WHERE file_path = ?"
-    db_cursor.execute(sql_str, (file_path,))
-    
-    result = db_cursor.fetchone()
-    
-    if result:
-        return result
-    return None
+
 
 def chunk_generator(content, buffer_size=8192):
     start = 0
@@ -157,20 +172,7 @@ def calculate_hash(content, hash_algorithm):
         concurrent.futures.wait(futures)  # Wait for all threads to finish
     return hash_obj.hexdigest()
 
-# GETS sha256 AND md5 HASHES AND COMPARES THEM TO THE HASHES IN THE .db FILE
-# RETURNS BOOLEAN: TRUE -> THE HASHES ARE EQUAL | FALSE -> THE HASHES ARE NOT EQUAL
-def is_hashes_equal(file_path, current_hash, hash_algorithm_str, db_connection, db_cursor):
-    original_hash = get_hash_from_db(file_path, hash_algorithm_str, db_connection, db_cursor)
-    if current_hash != original_hash:
-        return False
-    return True
 
-# GETS A FILE PATH, 2 HASHES OF THE FILE (sha256, md5), A .db FILE PATH AND A TABLE NAME (optional)
-# ADDS THE FILE PATH AND THE HASHES TO THE DATA BASE, RETURNS None
-def add_hashes_to_db(file_path, sha256, md5, cursor, db_table="hashes"):
-    cursor.execute("INSERT OR IGNORE INTO ", db_table, " (file_path, sha256, md5) VALUES (?, ?, ?)"
-                      ,(file_path, sha256, md5))
-    return None
 
 # GETS A FILE PATH AND RETURNS THE FILE SIZE IN KB
 def get_file_sizeKB(file_path):
@@ -187,10 +189,10 @@ def get_file_sizeKB(file_path):
         return None
 
 
-def is_virus_signature_in_file(content, connection, cursor, db_table="virus_signatures"):
-    cursor.execute("SELECT signature FROM " + db_table)
+def is_virus_signature_in_file(content, db_file, db_table="virus_signatures"):
+    db_file.cursor.execute("SELECT signature FROM " + db_table)
     ret = False
-    virus_signatures = cursor.fetchall()
+    virus_signatures = db_file.cursor.fetchall()
     
     for signature in virus_signatures:
         virus_signature = str.encode(signature[0])
@@ -249,7 +251,7 @@ def snapshot_registry():
 
 def compare_registry_after_exe(exe_path):
     before_exe_snapshot = snapshot_registry()
-    os.startfile(r"C:\Users\edanc\Downloads\add.exe")
+    os.startfile(exe_path)
     after_exe_snapshot = snapshot_registry()
     return before_exe_snapshot == after_exe_snapshot
 
